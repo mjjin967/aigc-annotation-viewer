@@ -1,8 +1,9 @@
 Viewing the image annotations
 
 Open a terminal in that folder and run:
-Mac/Linux: `python3 -m http.server 8000`
-Windows: `py -m http.server 8000`
+
+- Mac/Linux: `python3 -m http.server 8000`
+- Windows: `py -m http.server 8000`
 
 In your browser, go to `http://localhost:8000`.
 Pick your name from the Person dropdown.
