@@ -16,6 +16,13 @@ const CONFIG = {
   HIDE_COLUMNS: ['raw_model_output'],                    // other columns to leave out of the panel
   BASE_DIR: '',                        // folder that contains the people folders, e.g. 'images' ('' = next to index.html)
   IMAGE_EXTENSIONS: ['.jpg', '.jpeg', '.png', '.webp', '.gif'],  // tried in order when file_id has no extension
+
+  // ---- Filters ----
+  // FILTER_COLUMNS: list the columns (dimensions) to get a dropdown, e.g. ['category', 'style'].
+  // Leave as null to auto-detect: every visible column with at most MAX_FILTER_VALUES distinct values
+  // (this skips free-text columns such as long descriptions).
+  FILTER_COLUMNS: ['visual_style','origin','format_function','content'],
+  MAX_FILTER_VALUES: 30,
 };
 /* ================================================== */
 </script>
@@ -86,6 +93,30 @@ const CONFIG = {
   .counter input { width: 64px; padding: 0 8px; text-align: right; font-variant-numeric: tabular-nums; }
   .counter span { font-variant-numeric: tabular-nums; }
 
+  /* ---- filters ---- */
+  .filters { border-bottom: 1px solid var(--rule); margin-top: 16px; }
+  .filters[hidden] { display: none; }
+  .filters summary {
+    display: flex; align-items: center; gap: 10px; cursor: pointer;
+    padding: 10px 20px; font-size: 14px; color: var(--muted); list-style: none;
+  }
+  .filters summary::-webkit-details-marker { display: none; }
+  .filters summary::before { content: "▸"; font-size: 12px; }
+  .filters[open] summary::before { content: "▾"; }
+  .filters .status { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .filter-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px;
+    padding: 4px 20px 14px; max-height: 32vh; overflow-y: auto;
+  }
+  .filter-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); min-width: 0; }
+  .filter-grid select {
+    width: 100%; flex: none; font-size: 13px; font-weight: 400; height: 30px;
+    text-transform: none; text-overflow: ellipsis;
+  }
+  .filter-grid select.active { border-color: var(--accent); background: #eef3f8; }
+  .filter-actions { padding: 0 20px 12px; }
+  .filter-actions button { height: 28px; font-size: 13px; }
+
   .fields { overflow-y: auto; padding: 8px 20px 24px; margin: 0; }
   .fields dt {
     font-size: 13px; color: var(--muted); margin-top: 16px; font-weight: 500;
@@ -118,6 +149,13 @@ const CONFIG = {
       Person
       <select id="person"></select>
     </label>
+
+    <details class="filters" id="filters" open hidden>
+      <summary>Filters <span class="status" id="filterStatus"></span></summary>
+      <div class="filter-grid" id="filterGrid"></div>
+      <div class="filter-actions"><button id="resetFilters" type="button">Reset all to None</button></div>
+    </details>
+
     <div class="nav">
       <button id="prev" aria-label="Previous image">Previous</button>
       <button id="next" aria-label="Next image">Next</button>
@@ -135,16 +173,86 @@ const CONFIG = {
 
 <script>
 const $ = id => document.getElementById(id);
-let allRows = [], rows = [], idx = 0;
+let allRows = [], personRows = [], rows = [], idx = 0;
+let dims = [];          // columns that get a filter dropdown
+let filterSelects = {}; // column -> <select>
 
+const cell = (row, col) => String(row[col] ?? '').trim();
+
+// ---- Work out which columns are filterable dimensions ----
+function detectDims(fields) {
+  const skip = new Set([CONFIG.ID_COLUMN, ...CONFIG.HIDE_COLUMNS]);
+  if (Array.isArray(CONFIG.FILTER_COLUMNS)) {
+    return CONFIG.FILTER_COLUMNS.filter(c => fields.includes(c) && c !== CONFIG.ID_COLUMN);
+  }
+  return fields.filter(c => {
+    if (skip.has(c)) return false;
+    const vals = new Set(allRows.map(r => cell(r, c)).filter(Boolean));
+    return vals.size > 0 && vals.size <= CONFIG.MAX_FILTER_VALUES;
+  });
+}
+
+// ---- Build one dropdown per dimension for the current person ----
+function buildFilters() {
+  const grid = $('filterGrid');
+  grid.replaceChildren();
+  filterSelects = {};
+  const usable = dims.filter(d => personRows.some(r => cell(r, d)));
+  $('filters').hidden = usable.length === 0;
+
+  for (const d of usable) {
+    const counts = new Map();
+    for (const r of personRows) {
+      const v = cell(r, d);
+      if (v) counts.set(v, (counts.get(v) || 0) + 1);
+    }
+    const sel = document.createElement('select');
+    sel.add(new Option('None', ''));
+    [...counts.keys()]
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
+      .forEach(v => sel.add(new Option(`${v} (${counts.get(v)})`, v)));
+    sel.addEventListener('change', () => { sel.blur(); applyFilters(0); });
+
+    const lab = document.createElement('label');
+    lab.append(document.createTextNode(d), sel);
+    grid.append(lab);
+    filterSelects[d] = sel;
+  }
+}
+
+function applyFilters(start = 0) {
+  const active = Object.entries(filterSelects).filter(([, s]) => s.value !== '');
+  for (const [, s] of Object.entries(filterSelects)) s.classList.toggle('active', s.value !== '');
+
+  // "None" (empty value) means: don't filter on that dimension
+  rows = personRows.filter(r => active.every(([d, s]) => cell(r, d) === s.value));
+
+  $('filterStatus').textContent = active.length ? `${rows.length} of ${personRows.length}` : '';
+  $('total').textContent = `/ ${rows.length}`;
+  $('jump').max = rows.length;
+
+  if (!rows.length) {
+    $('img').removeAttribute('src');
+    $('fields').replaceChildren();
+    $('jump').value = '';
+    $('prev').disabled = $('next').disabled = true;
+    $('open').removeAttribute('href');
+    showMsg('No images match the current filters. Set a dimension back to “None” to widen the results.');
+    return;
+  }
+  go(start);
+}
 
 async function selectPerson(p, start = 0) {
   showMsg('Scanning folder…');
   await ensureIndex(p);
-  rows = rowsFor(p);
-  $('total').textContent = `/ ${rows.length}`;
-  $('jump').max = rows.length;
-  if (!rows.length) {
+  personRows = rowsFor(p);
+  buildFilters();   // filters reset to None whenever the person changes
+
+  if (!personRows.length) {
+    rows = [];
+    $('total').textContent = '/ 0';
+    $('jump').max = 0;
     $('img').removeAttribute('src');
     $('fields').replaceChildren();
     $('jump').value = '';
@@ -153,7 +261,7 @@ async function selectPerson(p, start = 0) {
     showMsg(`No images for ${p}. Nothing in ${p}/ (or its subfolders) matches a name in the ${CONFIG.ID_COLUMN} column. If the folder exists, make sure the server shows directory listings (e.g. <code>python3 -m http.server</code>).`);
     return;
   }
-  go(start);
+  applyFilters(start);
 }
 
 // ---- Local folder index: person -> Map(lowercase file name -> [urls]) ----
@@ -220,6 +328,7 @@ function load() {
       }
       allRows = res.data.filter(r => (r[CONFIG.ID_COLUMN] || '').trim());
       if (!allRows.length) { showMsg('The sheet loaded but no rows have a file ID.'); return; }
+      dims = detectDims(fields);
 
       showMsg('Scanning folders…');
       await Promise.all(CONFIG.PEOPLE.map(ensureIndex));   // so counts only include images that exist
@@ -278,6 +387,10 @@ $('img').addEventListener('error', e => {
 });
 
 $('person').addEventListener('change', e => { selectPerson(e.target.value, 0); e.target.blur(); });
+$('resetFilters').onclick = () => {
+  Object.values(filterSelects).forEach(s => s.value = '');
+  applyFilters(0);
+};
 $('prev').onclick = () => go(idx - 1);
 $('next').onclick = () => go(idx + 1);
 $('jump').addEventListener('change', e => go(parseInt(e.target.value, 10) - 1));
