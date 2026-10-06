@@ -13,7 +13,7 @@ const CONFIG = {
   CSV_FILE:   'gemini_annotations_xDATA_1.csv',  // CSV in the same folder as index.html
   ID_COLUMN:  'filename',              // column holding the image file name (with or without extension)
   PEOPLE: ['jean', 'martin', 'diya', 'soham', 'tiziano'],
-  HIDE_COLUMNS: ['raw_model_output'],                    // other columns to leave out of the panel
+  HIDE_COLUMNS: ['status','raw_model_output'],                    // other columns to leave out of the panel
   BASE_DIR: '',                        // folder that contains the people folders, e.g. 'images' ('' = next to index.html)
   IMAGE_EXTENSIONS: ['.jpg', '.jpeg', '.png', '.webp', '.gif'],  // tried in order when file_id has no extension
 
@@ -21,8 +21,13 @@ const CONFIG = {
   // FILTER_COLUMNS: list the columns (dimensions) to get a dropdown, e.g. ['category', 'style'].
   // Leave as null to auto-detect: every visible column with at most MAX_FILTER_VALUES distinct values
   // (this skips free-text columns such as long descriptions).
-  FILTER_COLUMNS: ['visual_style','origin','format_function','content'],
+  FILTER_COLUMNS: null,
   MAX_FILTER_VALUES: 30,
+
+  // Columns whose cells hold several categories in one string, e.g. "sports | games/anime".
+  // Each category becomes its own dropdown option (trimmed), and a row matches if it contains that category.
+  MULTI_VALUE_COLUMNS: ['format_function', 'content'],
+  MULTI_VALUE_SEPARATOR: /\|/,         // categories are separated by a pipe, e.g. "sports | games/anime"
 };
 /* ================================================== */
 </script>
@@ -179,6 +184,19 @@ let filterSelects = {}; // column -> <select>
 
 const cell = (row, col) => String(row[col] ?? '').trim();
 
+// All categories in a cell. Multi-value columns are split, trimmed (whitespace, stray quotes/brackets),
+// and de-duplicated; other columns return their single trimmed value.
+const isMulti = col => CONFIG.MULTI_VALUE_COLUMNS.includes(col);
+function values(row, col) {
+  const v = cell(row, col);
+  if (!v) return [];
+  if (!isMulti(col)) return [v];
+  const parts = v.split(CONFIG.MULTI_VALUE_SEPARATOR)
+    .map(s => s.replace(/^[\s\[\]"']+|[\s\[\]"']+$/g, ''))
+    .filter(Boolean);
+  return [...new Set(parts)];
+}
+
 // ---- Work out which columns are filterable dimensions ----
 function detectDims(fields) {
   const skip = new Set([CONFIG.ID_COLUMN, ...CONFIG.HIDE_COLUMNS]);
@@ -187,7 +205,8 @@ function detectDims(fields) {
   }
   return fields.filter(c => {
     if (skip.has(c)) return false;
-    const vals = new Set(allRows.map(r => cell(r, c)).filter(Boolean));
+    const vals = new Set(allRows.flatMap(r => values(r, c)));
+    if (isMulti(c)) return vals.size > 0;   // always filterable, however many categories
     return vals.size > 0 && vals.size <= CONFIG.MAX_FILTER_VALUES;
   });
 }
@@ -197,14 +216,13 @@ function buildFilters() {
   const grid = $('filterGrid');
   grid.replaceChildren();
   filterSelects = {};
-  const usable = dims.filter(d => personRows.some(r => cell(r, d)));
+  const usable = dims.filter(d => personRows.some(r => values(r, d).length));
   $('filters').hidden = usable.length === 0;
 
   for (const d of usable) {
     const counts = new Map();
     for (const r of personRows) {
-      const v = cell(r, d);
-      if (v) counts.set(v, (counts.get(v) || 0) + 1);
+      for (const v of values(r, d)) counts.set(v, (counts.get(v) || 0) + 1);
     }
     const sel = document.createElement('select');
     sel.add(new Option('None', ''));
@@ -225,7 +243,7 @@ function applyFilters(start = 0) {
   for (const [, s] of Object.entries(filterSelects)) s.classList.toggle('active', s.value !== '');
 
   // "None" (empty value) means: don't filter on that dimension
-  rows = personRows.filter(r => active.every(([d, s]) => cell(r, d) === s.value));
+  rows = personRows.filter(r => active.every(([d, s]) => values(r, d).includes(s.value)));
 
   $('filterStatus').textContent = active.length ? `${rows.length} of ${personRows.length}` : '';
   $('total').textContent = `/ ${rows.length}`;
