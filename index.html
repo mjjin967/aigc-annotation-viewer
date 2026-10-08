@@ -98,6 +98,10 @@ const CONFIG = {
   .counter input { width: 64px; padding: 0 8px; text-align: right; font-variant-numeric: tabular-nums; }
   .counter span { font-variant-numeric: tabular-nums; }
 
+  /* ---- search ---- */
+  .search { padding: 16px 20px 0; }
+  .search input { width: 100%; padding: 0 10px; font-size: 14px; }
+
   /* ---- filters ---- */
   .filters { border-bottom: 1px solid var(--rule); margin-top: 16px; }
   .filters[hidden] { display: none; }
@@ -154,6 +158,11 @@ const CONFIG = {
       Person
       <select id="person"></select>
     </label>
+
+    <div class="search">
+      <input id="search" type="search" list="fileList" placeholder="Search by filename…" autocomplete="off" aria-label="Search by filename">
+      <datalist id="fileList"></datalist>
+    </div>
 
     <details class="filters" id="filters" open hidden>
       <summary>Filters <span class="status" id="filterStatus"></span></summary>
@@ -242,8 +251,13 @@ function applyFilters(start = 0) {
   const active = Object.entries(filterSelects).filter(([, s]) => s.value !== '');
   for (const [, s] of Object.entries(filterSelects)) s.classList.toggle('active', s.value !== '');
 
+  const q = $('search').value.trim().toLowerCase();
+
   // "None" (empty value) means: don't filter on that dimension
-  rows = personRows.filter(r => active.every(([d, s]) => values(r, d).includes(s.value)));
+  rows = personRows.filter(r =>
+    (!q || cell(r, CONFIG.ID_COLUMN).toLowerCase().includes(q)) &&
+    active.every(([d, s]) => values(r, d).includes(s.value))
+  );
 
   $('filterStatus').textContent = active.length ? `${rows.length} of ${personRows.length}` : '';
   $('total').textContent = `/ ${rows.length}`;
@@ -255,7 +269,7 @@ function applyFilters(start = 0) {
     $('jump').value = '';
     $('prev').disabled = $('next').disabled = true;
     $('open').removeAttribute('href');
-    showMsg('No images match the current filters. Set a dimension back to “None” to widen the results.');
+    showMsg('No images match the current search or filters. Clear the search or set a dimension back to “None” to widen the results.');
     return;
   }
   go(start);
@@ -266,6 +280,8 @@ async function selectPerson(p, start = 0) {
   await ensureIndex(p);
   personRows = rowsFor(p);
   buildFilters();   // filters reset to None whenever the person changes
+  $('search').value = '';
+  $('fileList').replaceChildren(...personRows.map(r => new Option(cell(r, CONFIG.ID_COLUMN))));
 
   if (!personRows.length) {
     rows = [];
@@ -407,8 +423,10 @@ $('img').addEventListener('error', e => {
 $('person').addEventListener('change', e => { selectPerson(e.target.value, 0); e.target.blur(); });
 $('resetFilters').onclick = () => {
   Object.values(filterSelects).forEach(s => s.value = '');
+  $('search').value = '';
   applyFilters(0);
 };
+$('search').addEventListener('input', () => applyFilters(0));
 $('prev').onclick = () => go(idx - 1);
 $('next').onclick = () => go(idx + 1);
 $('jump').addEventListener('change', e => go(parseInt(e.target.value, 10) - 1));
